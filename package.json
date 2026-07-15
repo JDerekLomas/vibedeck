@@ -1,0 +1,13 @@
+{
+  "name": "vibedeck",
+  "version": "0.1.0",
+  "description": "An attention board for your Claude Code sessions — evolving titles, AI cover art, triage by who-needs-you.",
+  "type": "module",
+  "bin": { "vibedeck": "bin/vibedeck" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "setup": "bash scripts/setup-env.sh && node scripts/install-hooks.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}

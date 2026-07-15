@@ -1,0 +1,291 @@
+// vibedeck server — the attention board for parallel Claude Code sessions.
+// Zero dependencies: http + SSE + fs.watch. Runs on 127.0.0.1 only.
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadEnv, readCache, writeCache, listArt, ART_DIR, DATA_DIR, PORT } from './store.mjs';
+import { Scanner, ACTIVE_WINDOW } from './scanner.mjs';
+import { generateBrain } from './brain.mjs';
+import { generateArt } from './art.mjs';
+import { cmuxUp, focusPane, openWorkspace, shq } from './cmux.mjs';
+
+loadEnv();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC = path.join(__dirname, '..', 'public');
+const scanner = new Scanner();
+const hookState = new Map();   // sessionId -> {state, detail, ts, loc}
+const brainMeta = new Map();   // sessionId -> {brain, dirtyEvent, artDay, artCount, generating}
+const sseClients = new Set();
+
+// ---------- persistence ----------
+function metaFor(id) {
+  let m = brainMeta.get(id);
+  if (!m) {
+    const cached = readCache(id) || {};
+    m = { brain: cached.brain || null, dirtyEvent: false, artDay: cached.artDay || '', artCount: cached.artCount || 0, generating: false, artBusy: false };
+    if (cached.hook && !hookState.has(id)) hookState.set(id, cached.hook);
+    brainMeta.set(id, m);
+  }
+  return m;
+}
+function persist(id) {
+  const m = brainMeta.get(id);
+  if (!m) return;
+  writeCache(id, { brain: m.brain, artDay: m.artDay, artCount: m.artCount, hook: hookState.get(id) || null });
+}
+
+// ---------- state ----------
+function stateOf(s) {
+  const h = hookState.get(s.id);
+  const now = Date.now();
+  if (h && h.ts >= s.mtime - 5000) {
+    if (h.state === 'working' && now - h.ts > 30 * 60e3 && now - s.mtime > 30 * 60e3) return { state: 'idle', detail: null };
+    return { state: h.state, detail: h.detail || null };
+  }
+  // File is being written to right now -> the agent is working.
+  if (now - s.mtime < 3 * 60e3) return { state: 'working', detail: null };
+  if (h) return { state: h.state === 'working' ? 'idle' : h.state, detail: h.detail || null };
+  return { state: 'idle', detail: null };
+}
+
+function card(s) {
+  const m = metaFor(s.id);
+  const art = listArt(s.id);
+  const st = stateOf(s);
+  const title = m.brain?.title || s.aiTitle || (s.firstPrompt ? s.firstPrompt.slice(0, 60) : s.project);
+  return {
+    id: s.id,
+    project: s.project,
+    branch: s.gitBranch,
+    cwd: s.cwd,
+    title,
+    status: m.brain?.status || null,
+    asks: st.state === 'needs-input' ? (st.detail || m.brain?.asks || 'waiting on you') : m.brain?.asks || null,
+    emoji: m.brain?.emoji || null,
+    state: st.state,
+    stateDetail: st.detail,
+    lastActivity: s.lastActivity || s.mtime,
+    stateSince: hookState.get(s.id)?.ts || s.mtime,
+    art: art.length ? art[art.length - 1].url : null,
+    artCount: art.length,
+    msgs: s.userCount + s.assistantCount,
+    tools: s.toolCount,
+  };
+}
+
+function board() {
+  const now = Date.now();
+  const all = [...scanner.sessions.values()].filter(s => s.parsed && (s.userCount > 0 || s.firstPrompt));
+  const active = [], earlier = [];
+  for (const s of all) (now - (s.lastActivity || s.mtime) <= ACTIVE_WINDOW ? active : earlier).push(s);
+  const rank = { 'needs-input': 0, working: 1, idle: 2, ended: 3 };
+  const cards = active.map(card).sort((a, b) =>
+    (rank[a.state] ?? 9) - (rank[b.state] ?? 9) ||
+    (a.state === 'needs-input' ? a.stateSince - b.stateSince : b.lastActivity - a.lastActivity));
+  const earlierCards = earlier.map(card).sort((a, b) => b.lastActivity - a.lastActivity).slice(0, 120);
+  return { generatedAt: now, active: cards, earlier: earlierCards };
+}
+
+// ---------- SSE ----------
+let broadcastTimer = null;
+function broadcast() {
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null;
+    const msg = `data: refresh\n\n`;
+    for (const res of sseClients) { try { res.write(msg); } catch { sseClients.delete(res); } }
+  }, 700);
+}
+scanner.on('change', broadcast);
+
+// ---------- hook events ----------
+function onHookEvent(payload, cmuxIdent) {
+  const id = payload.session_id;
+  if (!id) return;
+  const ev = payload.hook_event_name;
+  const map = {
+    UserPromptSubmit: 'working',
+    PreToolUse: 'working',
+    Stop: 'idle',
+    SubagentStop: null,
+    Notification: 'needs-input',
+    SessionStart: 'idle',
+    SessionEnd: 'ended',
+  };
+  const state = map[ev];
+  if (state === undefined || state === null) return;
+  const prev = hookState.get(id) || {};
+  const loc = cmuxIdent?.caller?.workspace_ref ? {
+    workspace_ref: cmuxIdent.caller.workspace_ref,
+    surface_ref: cmuxIdent.caller.surface_ref,
+  } : prev.loc || null;
+  hookState.set(id, { state, detail: ev === 'Notification' ? (payload.message || null) : null, ts: Date.now(), loc });
+  const m = metaFor(id);
+  if (ev === 'Stop' || ev === 'Notification') m.dirtyEvent = true;
+  persist(id);
+  try { fs.appendFileSync(path.join(DATA_DIR, 'events.log'), JSON.stringify({ t: new Date().toISOString(), ev, id: id.slice(0, 8), cwd: payload.cwd }) + '\n'); } catch {}
+  broadcast();
+}
+
+// ---------- brain + art loops ----------
+let brainBusy = 0;
+async function brainTick() {
+  const now = Date.now();
+  const candidates = [...scanner.sessions.values()]
+    .filter(s => s.parsed && s.userCount > 0 && now - (s.lastActivity || s.mtime) <= ACTIVE_WINDOW)
+    .sort((a, b) => (b.lastActivity || b.mtime) - (a.lastActivity || a.mtime))
+    .slice(0, 30);
+  for (const s of candidates) {
+    if (brainBusy >= 2) break;
+    const m = metaFor(s.id);
+    if (m.generating) continue;
+    const msgs = s.userCount + s.assistantCount;
+    const stale = !m.brain || (msgs - (m.brain.atMsgCount || 0) >= 6) || m.dirtyEvent;
+    const cooled = now - (m.brain?.genAt || 0) > 90e3;
+    if (!stale || !cooled) continue;
+    m.generating = true; brainBusy++;
+    const hint = stateOf(s).state;
+    generateBrain(s, m.brain, hint)
+      .then(brain => {
+        if (brain) {
+          const milestone = brain.milestone;
+          m.brain = brain; m.dirtyEvent = false;
+          persist(s.id); broadcast();
+          maybeArt(s, m, milestone);
+        }
+      })
+      .catch(e => console.error('brain', s.id.slice(0, 8), e.message))
+      .finally(() => { m.generating = false; brainBusy--; });
+  }
+}
+
+let artBusy = false;
+const artQueue = [];
+function maybeArt(s, m, milestone) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (m.artDay !== today) { m.artDay = today; m.artCount = 0; }
+  const existing = listArt(s.id);
+  const latest = existing[existing.length - 1];
+  const want = !existing.length || (milestone && m.artCount < 4 && (!latest || Date.now() - latest.ts > 15 * 60e3));
+  if (!want || m.artBusy) return;
+  m.artBusy = true;
+  m.artCount++;
+  persist(s.id);
+  artQueue.push(async () => {
+    try {
+      await generateArt(s, m.brain?.vibe);
+      broadcast();
+    } catch (e) { console.error('art', s.id.slice(0, 8), e.message); }
+    finally { m.artBusy = false; }
+  });
+  drainArt();
+}
+async function drainArt() {
+  if (artBusy) return;
+  const job = artQueue.shift();
+  if (!job) return;
+  artBusy = true;
+  try { await job(); } finally { artBusy = false; drainArt(); }
+}
+
+// ---------- http ----------
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.json': 'application/json' };
+
+function send(res, code, body, type = 'application/json') {
+  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
+  res.end(type === 'application/json' ? JSON.stringify(body) : body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    req.on('data', c => { buf += c; if (buf.length > 2e6) req.destroy(); });
+    req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const p = url.pathname;
+  try {
+    if (p === '/api/event' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => null);
+      if (body) onHookEvent(body.payload || body, body.cmux || null);
+      return send(res, 204, '');
+    }
+    if (p === '/api/sessions') return send(res, 200, board());
+    if (p.startsWith('/api/session/')) {
+      const id = p.split('/')[3];
+      const s = scanner.sessions.get(id);
+      if (!s) return send(res, 404, { error: 'unknown session' });
+      return send(res, 200, {
+        ...card(s),
+        firstPrompt: s.wish || s.firstPrompt,
+        lastPrompt: s.lastPrompt,
+        recent: s.recent.slice(-8),
+        artHistory: listArt(id),
+        file: s.file,
+        resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}`,
+      });
+    }
+    if (p === '/api/open' && req.method === 'POST') {
+      const { id } = await readBody(req);
+      const s = scanner.sessions.get(id);
+      if (!s) return send(res, 404, { error: 'unknown session' });
+      if (!(await cmuxUp())) return send(res, 200, { result: 'no-cmux', resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}` });
+      const loc = hookState.get(id)?.loc;
+      const st = stateOf(s).state;
+      if (loc && st !== 'ended' && (await focusPane(loc))) return send(res, 200, { result: 'focused' });
+      const m = metaFor(id);
+      const ws = await openWorkspace(m.brain?.title || s.project, s.cwd, `claude --resume ${id}`);
+      return send(res, 200, ws ? { result: 'resumed', workspace: ws } : { result: 'failed', resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}` });
+    }
+    if (p === '/api/wish' && req.method === 'POST') {
+      const { cwd, text } = await readBody(req);
+      if (!text) return send(res, 400, { error: 'no wish' });
+      if (!(await cmuxUp())) return send(res, 200, { result: 'no-cmux', cmd: `cd ${shq(cwd || '~')} && claude ${shq(text)}` });
+      const title = text.split(/\s+/).slice(0, 5).join(' ');
+      const ws = await openWorkspace(title, cwd, `claude ${shq(text)}`);
+      return send(res, 200, ws ? { result: 'started', workspace: ws } : { result: 'failed' });
+    }
+    if (p === '/api/projects') {
+      const seen = new Map();
+      for (const s of scanner.sessions.values()) {
+        if (s.cwd) seen.set(s.cwd, Math.max(seen.get(s.cwd) || 0, s.lastActivity || s.mtime));
+      }
+      return send(res, 200, [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([cwd]) => cwd).slice(0, 40));
+    }
+    if (p === '/api/stream') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+      res.write('data: hello\n\n');
+      sseClients.add(res);
+      req.on('close', () => sseClients.delete(res));
+      return;
+    }
+    if (p.startsWith('/art/')) {
+      const rel = path.normalize(p.slice(5));
+      if (rel.startsWith('..')) return send(res, 403, { error: 'no' });
+      const f = path.join(ART_DIR, rel);
+      if (!fs.existsSync(f)) return send(res, 404, { error: 'not found' });
+      return send(res, 200, fs.readFileSync(f), MIME[path.extname(f)] || 'application/octet-stream');
+    }
+    // static
+    const rel = p === '/' ? '/index.html' : path.normalize(p);
+    if (rel.startsWith('..')) return send(res, 403, { error: 'no' });
+    const f = path.join(PUBLIC, rel);
+    if (fs.existsSync(f) && fs.statSync(f).isFile()) return send(res, 200, fs.readFileSync(f), MIME[path.extname(f)] || 'text/plain');
+    return send(res, 404, { error: 'not found' });
+  } catch (e) {
+    console.error(req.method, p, e.message);
+    return send(res, 500, { error: e.message });
+  }
+});
+
+console.log('vibedeck: scanning sessions…');
+await scanner.init();
+console.log(`vibedeck: ${scanner.sessions.size} sessions loaded`);
+setInterval(brainTick, 15e3);
+brainTick();
+server.listen(PORT, '127.0.0.1', () => console.log(`vibedeck: http://127.0.0.1:${PORT}`));

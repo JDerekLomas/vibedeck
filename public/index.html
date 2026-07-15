@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vibedeck</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%231b2036'/><circle cx='38' cy='42' r='20' fill='%23e8a852'/><rect x='48' y='52' width='34' height='22' rx='6' fill='%235f9e94'/></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="wordmark">vibe<span>deck</span></div>
+  <div class="tally" id="tally"></div>
+  <button class="wish-btn" id="wishBtn">+ new wish</button>
+</header>
+
+<main id="board">
+  <div class="loading">reading your sessions…</div>
+</main>
+
+<aside id="drawer" class="drawer">
+  <div class="drawer-inner" id="drawerInner"></div>
+</aside>
+<div id="scrim" class="scrim"></div>
+
+<div id="wishModal" class="modal">
+  <div class="modal-card">
+    <h2>What do you want to make?</h2>
+    <textarea id="wishText" rows="4" placeholder="Describe it like you'd tell a collaborator — what it is, who it's for, what done feels like."></textarea>
+    <input id="wishCwd" list="projectList" placeholder="project folder (e.g. /Users/dereklomas/sourcelibrary)">
+    <datalist id="projectList"></datalist>
+    <div class="modal-actions">
+      <button class="ghost" id="wishCancel">never mind</button>
+      <button class="primary" id="wishGo">begin →</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
