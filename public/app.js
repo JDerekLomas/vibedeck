@@ -134,14 +134,19 @@ async function fillDrawer(id, soft = false) {
     <div class="path">${esc(d.resumeCmd || '')}</div>`;
 
   $('#jumpBtn')?.addEventListener('click', async () => {
-    toast('opening…');
-    const r = await (await fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })).json();
-    if (r.result === 'focused') toast('focused its cmux pane');
-    else if (r.result === 'resumed') toast('resumed in a new cmux workspace');
-    else { await navigator.clipboard.writeText(d.resumeCmd); toast('cmux unavailable — resume command copied'); }
+    toast('opening… (starts cmux if needed — can take a few seconds)', 15000);
+    try {
+      const r = await (await fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })).json();
+      if (r.result === 'focused') toast('focused its cmux pane');
+      else if (r.result === 'resumed') toast('resumed in a new cmux workspace');
+      else {
+        const copied = await safeCopy(r.resumeCmd || d.resumeCmd);
+        toast(`couldn't open: ${r.detail || r.error || r.result}${copied ? ' — resume command copied' : ''}`, 8000);
+      }
+    } catch (e) { toast(`couldn't open: ${e.message}`, 8000); }
   });
   $('#copyBtn')?.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(d.resumeCmd); toast('copied');
+    toast((await safeCopy(d.resumeCmd)) ? 'copied' : 'copy failed — command is shown below the buttons');
   });
   document.querySelectorAll('.filmstrip img').forEach(img =>
     img.addEventListener('click', () => {
@@ -169,21 +174,42 @@ $('#wishGo').addEventListener('click', async () => {
   const cwd = $('#wishCwd').value.trim() || $('#wishCwd').placeholder;
   if (!text) return $('#wishText').focus();
   closeWish();
-  toast('starting a new session…');
-  const r = await (await fetch('/api/wish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, cwd }) })).json();
-  if (r.result === 'started') toast('session born in cmux — it will appear here shortly');
-  else if (r.cmd) { await navigator.clipboard.writeText(r.cmd); toast('cmux unavailable — launch command copied'); }
-  else toast('could not start the session');
+  toast('starting a new session… (starts cmux if needed)', 15000);
+  try {
+    const r = await (await fetch('/api/wish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, cwd }) })).json();
+    if (r.result === 'started') toast('session born in cmux — it will appear here shortly');
+    else {
+      const copied = r.cmd ? await safeCopy(r.cmd) : false;
+      toast(`couldn't start: ${r.detail || r.error || r.result}${copied ? ' — launch command copied' : ''}`, 8000);
+    }
+  } catch (e) { toast(`couldn't start: ${e.message}`, 8000); }
 });
 
 /* ---------- toast ---------- */
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+// Clipboard that never throws: async API first (may be absent in WKWebView),
+// hidden-textarea fallback second.
+async function safeCopy(text) {
+  if (!text) return false;
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 /* ---------- live ---------- */

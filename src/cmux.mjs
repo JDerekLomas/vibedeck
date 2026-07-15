@@ -14,20 +14,43 @@ function run(args, timeout = 8000) {
   });
 }
 
+const BUNDLE = 'com.cmuxterm.app';
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 export async function cmuxUp() {
   return (await run(['ping'], 2000)) === 'PONG';
 }
 
+// Make sure cmux is running and answering — launch the app if needed.
+// Returns { up, started, reason }.
+export async function ensureCmux() {
+  if (await cmuxUp()) return { up: true, started: false };
+  const opened = await new Promise(r => execFile('open', ['-b', BUNDLE], (err) => r(!err)));
+  if (!opened) return { up: false, reason: 'cmux.app not found' };
+  for (let i = 0; i < 25; i++) {
+    await sleep(600);
+    if (await cmuxUp()) return { up: true, started: true };
+  }
+  return { up: false, reason: 'cmux launched but its control socket is not answering (Settings → Advanced → Automation socket)' };
+}
+
+// Bring the cmux app to the foreground so the user actually sees the result.
+export function frontCmux() {
+  execFile('open', ['-b', BUNDLE], () => {});
+}
+
 // Focus a known workspace/surface (from hook-captured identify data).
+// Prefer UUIDs: short refs like "workspace:2" are reused after closes and can
+// silently focus the wrong workspace.
 export async function focusPane(loc) {
   if (!loc) return false;
-  const ws = loc.workspace_ref || loc.workspace;
+  const ws = loc.workspace_uuid; // refs are recycled after closes — UUID or nothing
   if (!ws) return false;
   const ok = await run(['select-workspace', '--workspace', ws]);
-  const surf = loc.surface_ref || loc.surface;
-  if (surf) await run(['focus-pane', '--pane', surf.replace('surface', 'pane'), '--workspace', ws]);
-  await run(['trigger-flash', '--workspace', ws, ...(surf ? ['--surface', surf] : [])]);
-  return ok !== null;
+  if (ok === null) return false;
+  if (loc.pane_uuid) await run(['focus-pane', '--pane', loc.pane_uuid, '--workspace', ws]);
+  await run(['trigger-flash', '--workspace', ws, ...(loc.surface_uuid ? ['--surface', loc.surface_uuid] : [])]);
+  return true;
 }
 
 // Open a new cmux workspace, cd into the project, and run a command

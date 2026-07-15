@@ -7,7 +7,7 @@ payload="$(cat)"
 
 ident="null"
 if command -v cmux >/dev/null 2>&1 && [ -S /tmp/cmux.sock ]; then
-  out="$(perl -e 'alarm 2; exec @ARGV' cmux --json identify 2>/dev/null)"
+  out="$(perl -e 'alarm 2; exec @ARGV' cmux --json --id-format both identify 2>/dev/null)"
   case "$out" in "{"*) ident="$out";; esac
 fi
 

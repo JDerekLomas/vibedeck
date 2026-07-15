@@ -8,7 +8,7 @@ import { loadEnv, readCache, writeCache, listArt, ART_DIR, DATA_DIR, PORT } from
 import { Scanner, ACTIVE_WINDOW } from './scanner.mjs';
 import { generateBrain } from './brain.mjs';
 import { generateArt } from './art.mjs';
-import { cmuxUp, focusPane, openWorkspace, shq } from './cmux.mjs';
+import { ensureCmux, focusPane, frontCmux, openWorkspace, shq } from './cmux.mjs';
 
 loadEnv();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,9 +116,13 @@ function onHookEvent(payload, cmuxIdent) {
   const state = map[ev];
   if (state === undefined || state === null) return;
   const prev = hookState.get(id) || {};
-  const loc = cmuxIdent?.caller?.workspace_ref ? {
-    workspace_ref: cmuxIdent.caller.workspace_ref,
-    surface_ref: cmuxIdent.caller.surface_ref,
+  const caller = cmuxIdent?.caller;
+  const loc = (caller?.workspace_id || caller?.workspace_ref) ? {
+    workspace_uuid: caller.workspace_id || null,
+    workspace_ref: caller.workspace_ref || null,
+    pane_uuid: caller.pane_id || null,
+    surface_uuid: caller.surface_id || null,
+    surface_ref: caller.surface_ref || null,
   } : prev.loc || null;
   hookState.set(id, { state, detail: ev === 'Notification' ? (payload.message || null) : null, ts: Date.now(), loc });
   const m = metaFor(id);
@@ -234,21 +238,27 @@ const server = http.createServer(async (req, res) => {
       const { id } = await readBody(req);
       const s = scanner.sessions.get(id);
       if (!s) return send(res, 404, { error: 'unknown session' });
-      if (!(await cmuxUp())) return send(res, 200, { result: 'no-cmux', resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}` });
+      const resumeCmd = `cd ${shq(s.cwd || '~')} && claude --resume ${id}`;
+      const cm = await ensureCmux();
+      if (!cm.up) return send(res, 200, { result: 'no-cmux', detail: cm.reason, resumeCmd });
       const loc = hookState.get(id)?.loc;
       const st = stateOf(s).state;
-      if (loc && st !== 'ended' && (await focusPane(loc))) return send(res, 200, { result: 'focused' });
+      if (loc && st !== 'ended' && (await focusPane(loc))) { frontCmux(); return send(res, 200, { result: 'focused' }); }
       const m = metaFor(id);
       const ws = await openWorkspace(m.brain?.title || s.project, s.cwd, `claude --resume ${id}`);
-      return send(res, 200, ws ? { result: 'resumed', workspace: ws } : { result: 'failed', resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}` });
+      if (ws) frontCmux();
+      return send(res, 200, ws ? { result: 'resumed', workspace: ws } : { result: 'failed', detail: 'cmux answered ping but workspace creation failed', resumeCmd });
     }
     if (p === '/api/wish' && req.method === 'POST') {
       const { cwd, text } = await readBody(req);
       if (!text) return send(res, 400, { error: 'no wish' });
-      if (!(await cmuxUp())) return send(res, 200, { result: 'no-cmux', cmd: `cd ${shq(cwd || '~')} && claude ${shq(text)}` });
+      const launchCmd = `cd ${shq(cwd || '~')} && claude ${shq(text)}`;
+      const cm = await ensureCmux();
+      if (!cm.up) return send(res, 200, { result: 'no-cmux', detail: cm.reason, cmd: launchCmd });
       const title = text.split(/\s+/).slice(0, 5).join(' ');
       const ws = await openWorkspace(title, cwd, `claude ${shq(text)}`);
-      return send(res, 200, ws ? { result: 'started', workspace: ws } : { result: 'failed' });
+      if (ws) frontCmux();
+      return send(res, 200, ws ? { result: 'started', workspace: ws } : { result: 'failed', detail: 'cmux answered ping but workspace creation failed', cmd: launchCmd });
     }
     if (p === '/api/projects') {
       const seen = new Map();
