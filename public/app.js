@@ -19,7 +19,10 @@ function cover(c, cls = 'cover') {
   const inner = c.art
     ? `<img src="${c.art}" alt="" loading="lazy">`
     : `<div class="placeholder">${esc(c.emoji || '·')}</div>`;
-  return `<div class="${cls}">${inner}<span class="state-pill state-${c.state}"><span class="dot"></span>${STATE_LABEL[c.state] || c.state}</span></div>`;
+  const waiting = c.asks && c.state !== 'working' && c.state !== 'needs-input';
+  const stateCls = waiting ? 'needs-input' : c.state;
+  const label = waiting ? 'waiting on you' : (STATE_LABEL[c.state] || c.state);
+  return `<div class="${cls}">${inner}<span class="state-pill state-${stateCls}"><span class="dot"></span>${label}</span></div>`;
 }
 
 function cardHtml(c) {

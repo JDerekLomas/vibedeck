@@ -17,6 +17,10 @@ Click a card for the full story: the original wish, the current state, a filmstr
 - Titles/status/asks: Haiku over recent transcript deltas (`ANTHROPIC_API_KEY`). Cover art: Gemini image gen (`GEMINI_API_KEY`) in a consistent risograph series style, regenerated on milestones; deterministic SVG fallback without a key.
 - Keys live in `~/.vibedeck/env` (chmod 600, never in the repo). All state in `~/.vibedeck/`.
 
+## The app
+
+`bash app/build.sh` compiles a native Swift shell (WKWebView, ~no dependencies) into `/Applications/vibedeck.app`: a real window, Dock icon, and a menu-bar item showing the needs-you count (amber `▤ N` when sessions are waiting on you). If the server is down the app kickstarts the launchd service itself.
+
 ## Setup
 
 ```bash
