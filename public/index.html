@@ -8,20 +8,25 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header>
-  <div class="wordmark">vibe<span>deck</span></div>
-  <div class="tally" id="tally"></div>
-  <button class="wish-btn" id="wishBtn">+ new wish</button>
-</header>
+<div class="split">
+  <aside class="listpane">
+    <header class="listhead">
+      <div class="wordmark">vibe<span>deck</span></div>
+      <button class="wish-btn" id="wishBtn" title="new wish">＋</button>
+    </header>
+    <div class="tally" id="tally"></div>
+    <div id="board" class="listbody">
+      <div class="loading">reading your sessions…</div>
+    </div>
+  </aside>
 
-<main id="board">
-  <div class="loading">reading your sessions…</div>
-</main>
-
-<aside id="drawer" class="drawer">
-  <div class="drawer-inner" id="drawerInner"></div>
-</aside>
-<div id="scrim" class="scrim"></div>
+  <main class="detailpane" id="detail">
+    <div class="detail-empty">
+      <div class="de-mark">✉</div>
+      <p>select a session to read its letter</p>
+    </div>
+  </main>
+</div>
 
 <div id="wishModal" class="modal">
   <div class="modal-card">

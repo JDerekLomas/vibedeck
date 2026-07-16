@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, readCache, writeCache, listArt, ART_DIR, DATA_DIR, PORT } from './store.mjs';
 import { Scanner, ACTIVE_WINDOW } from './scanner.mjs';
 import { generateBrain } from './brain.mjs';
-import { generateArt } from './art.mjs';
+import { saveGlyph } from './art.mjs';
 import { ensureCmux, focusPane, frontCmux, openWorkspace, shq } from './cmux.mjs';
 
 loadEnv();
@@ -145,52 +145,26 @@ async function brainTick() {
     const m = metaFor(s.id);
     if (m.generating) continue;
     const msgs = s.userCount + s.assistantCount;
-    const stale = !m.brain || (msgs - (m.brain.atMsgCount || 0) >= 6) || m.dirtyEvent;
+    const stale = !m.brain || !m.brain.svg || (msgs - (m.brain.atMsgCount || 0) >= 6) || m.dirtyEvent;
     const cooled = now - (m.brain?.genAt || 0) > 90e3;
     if (!stale || !cooled) continue;
     m.generating = true; brainBusy++;
     const hint = stateOf(s).state;
+    const hadSvg = !!m.brain?.svg;
     generateBrain(s, m.brain, hint)
       .then(brain => {
         if (brain) {
-          const milestone = brain.milestone;
           m.brain = brain; m.dirtyEvent = false;
+          // New glyph when the session gets its first one, or on a milestone —
+          // history accumulates into the drawer's filmstrip.
+          const hasGlyph = listArt(s.id).some(a => a.url.endsWith('.svg'));
+          if (!hasGlyph || (brain.milestone && hadSvg) ) saveGlyph(s, brain.svg);
           persist(s.id); broadcast();
-          maybeArt(s, m, milestone);
         }
       })
       .catch(e => console.error('brain', s.id.slice(0, 8), e.message))
       .finally(() => { m.generating = false; brainBusy--; });
   }
-}
-
-let artBusy = false;
-const artQueue = [];
-function maybeArt(s, m, milestone) {
-  const today = new Date().toISOString().slice(0, 10);
-  if (m.artDay !== today) { m.artDay = today; m.artCount = 0; }
-  const existing = listArt(s.id);
-  const latest = existing[existing.length - 1];
-  const want = !existing.length || (milestone && m.artCount < 4 && (!latest || Date.now() - latest.ts > 15 * 60e3));
-  if (!want || m.artBusy) return;
-  m.artBusy = true;
-  m.artCount++;
-  persist(s.id);
-  artQueue.push(async () => {
-    try {
-      await generateArt(s, m.brain?.vibe);
-      broadcast();
-    } catch (e) { console.error('art', s.id.slice(0, 8), e.message); }
-    finally { m.artBusy = false; }
-  });
-  drainArt();
-}
-async function drainArt() {
-  if (artBusy) return;
-  const job = artQueue.shift();
-  if (!job) return;
-  artBusy = true;
-  try { await job(); } finally { artBusy = false; drainArt(); }
 }
 
 // ---------- http ----------

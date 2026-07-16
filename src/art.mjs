@@ -1,49 +1,16 @@
-// Cover art for a session — Gemini image gen from the brain's visual metaphor,
-// with a deterministic generative-SVG fallback so every card always has a face.
+// Session glyphs — small SVG pictograms written by the brain (Haiku), with a
+// deterministic generative fallback so every row always has a face.
 import fs from 'node:fs';
 import path from 'node:path';
 import { artDirFor } from './store.mjs';
 
-const MODELS = ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-2.0-flash-preview-image-generation'];
-
-const SERIES_STYLE = 'Minimal risograph screenprint illustration, bold flat shapes, limited palette of warm amber, dusty teal and cream inks on deep indigo paper, subtle grain texture, generous negative space, square composition. Absolutely no text, no letters, no numbers, no logos.';
-
-export async function generateArt(session, vibe) {
-  const key = process.env.GEMINI_API_KEY;
+// Persist the brain's pictogram (or the deterministic fallback) as the
+// session's latest glyph. History is kept — the drawer shows the filmstrip.
+export function saveGlyph(session, svg) {
   const dir = artDirFor(session.id);
   const ts = Date.now();
-
-  if (key && vibe) {
-    for (const model of MODELS) {
-      try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: `${SERIES_STYLE}\n\nSubject: ${vibe}` }] }],
-            }),
-          },
-        );
-        if (!res.ok) { if (res.status === 404) continue; throw new Error(`${model} ${res.status}`); }
-        const data = await res.json();
-        const parts = data.candidates?.[0]?.content?.parts || [];
-        const img = parts.find(p => p.inlineData?.data);
-        if (!img) continue;
-        const ext = (img.inlineData.mimeType || 'image/png').includes('jpeg') ? 'jpg' : 'png';
-        const file = path.join(dir, `${ts}.${ext}`);
-        fs.writeFileSync(file, Buffer.from(img.inlineData.data, 'base64'));
-        return `/art/${session.id}/${ts}.${ext}`;
-      } catch (e) {
-        console.error('art', model, e.message);
-      }
-    }
-  }
-
-  // Fallback: deterministic generative composition from the session id.
   const file = path.join(dir, `${ts}.svg`);
-  fs.writeFileSync(file, fallbackSvg(session.id, session.project));
+  fs.writeFileSync(file, svg || fallbackSvg(session.id, session.project));
   return `/art/${session.id}/${ts}.svg`;
 }
 

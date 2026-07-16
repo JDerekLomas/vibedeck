@@ -1,7 +1,8 @@
-/* vibedeck board — renders /api/sessions, live via SSE. */
+/* vibedeck — split view: session list (left) + letter & gazette detail (right). */
 const $ = (s, el = document) => el.querySelector(s);
 let data = null;
-let openId = null;
+let selectedId = null;
+let userSelected = false;
 
 const ago = (ts) => {
   if (!ts) return '';
@@ -15,45 +16,34 @@ const esc = (t) => (t || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
 
 const STATE_LABEL = { 'needs-input': 'needs you', working: 'working', idle: 'resting', ended: 'closed' };
 
-function cover(c, cls = 'cover') {
-  const inner = c.art
-    ? `<img src="${c.art}" alt="" loading="lazy">`
-    : `<div class="placeholder">${esc(c.emoji || '·')}</div>`;
+/* ---------- list ---------- */
+function glyph(c) {
+  return c.art
+    ? `<img class="glyph" src="${c.art}" alt="" loading="lazy">`
+    : `<div class="glyph em">${esc(c.emoji || '·')}</div>`;
+}
+
+function rowHtml(c, compact = false) {
   const waiting = c.asks && c.state !== 'working' && c.state !== 'needs-input';
-  const stateCls = waiting ? 'needs-input' : c.state;
-  const label = waiting ? 'waiting on you' : (STATE_LABEL[c.state] || c.state);
-  return `<div class="${cls}">${inner}<span class="state-pill state-${stateCls}"><span class="dot"></span>${label}</span></div>`;
-}
-
-function cardHtml(c) {
-  return `<article class="card ${c.state}" data-id="${c.id}">
-    ${cover(c)}
-    <div class="body">
-      <h3>${c.emoji ? `<span class="emoji">${esc(c.emoji)}</span>` : ''}${esc(c.title)}</h3>
-      ${c.asks && c.state !== 'working' ? `<div class="asks${c.state === 'needs-input' ? '' : ' soft'}">→ ${esc(c.asks)}</div>` : ''}
-      ${c.status ? `<div class="status">${esc(c.status)}</div>` : ''}
-      <div class="meta">
-        <span class="chip">${esc(c.project)}</span>
-        ${c.branch && c.branch !== 'main' ? `<span class="chip">${esc(c.branch)}</span>` : ''}
-        <span class="ago">${ago(c.lastActivity)}</span>
-      </div>
+  const stateCls = waiting ? 'waiting' : c.state;
+  const second = (c.asks && c.state !== 'working')
+    ? `<span class="asks">→ ${esc(c.asks)}</span>`
+    : (c.status ? esc(c.status) : esc(c.project));
+  return `<div class="lrow ${stateCls}${compact ? ' compact' : ''}${c.id === selectedId ? ' sel' : ''}" data-id="${c.id}">
+    ${glyph(c)}
+    <div class="mid">
+      <div class="l1"><h4>${esc(c.title)}</h4></div>
+      ${!compact ? `<div class="l2">${second}</div>` : ''}
+      ${!compact ? `<div class="l3"><span class="proj">${esc(c.project)}</span><span class="dot state-${stateCls}"></span><span class="ago">${ago(c.lastActivity)}</span></div>` : ''}
     </div>
-  </article>`;
-}
-
-function rowHtml(c) {
-  const thumb = c.art ? `<img class="thumb" src="${c.art}" loading="lazy">` : `<div class="thumb">${esc(c.emoji || '·')}</div>`;
-  return `<div class="row" data-id="${c.id}">
-    ${thumb}
-    <div class="t"><h4>${esc(c.title)}</h4><small>${esc(c.project)}${c.status ? ' — ' + esc(c.status) : ''}</small></div>
-    <span class="ago">${ago(c.lastActivity)}</span>
+    <button class="jump" data-jump="${c.id}" title="open in cmux">↗</button>
   </div>`;
 }
 
-function section(title, cls, cards, renderer, emptyText) {
+function section(title, cls, cards, emptyText, compact = false) {
   if (!cards.length && !emptyText) return '';
   const body = cards.length
-    ? `<div class="${renderer === rowHtml ? 'rows' : 'grid'}">${cards.map(renderer).join('')}</div>`
+    ? cards.map(c => rowHtml(c, compact)).join('')
     : `<div class="empty">${emptyText}</div>`;
   return `<section class="section ${cls}">
     <div class="section-head ${cls}"><span>${title}</span><span class="count">${cards.length || ''}</span></div>
@@ -72,89 +62,129 @@ function render() {
     `<b>${working.length}</b> working · <b>${resting.length}</b> resting`;
 
   $('#board').innerHTML =
-    section('Needs you', 'needs', needs, cardHtml, 'nobody is waiting on you — go make something') +
-    section('In motion', 'motion', working, cardHtml, '') +
-    section('At rest', 'rest', resting, cardHtml, '') +
-    section('Earlier', 'earlier', data.earlier, rowHtml, '');
+    section('Needs you', 'needs', needs, 'nobody is waiting on you') +
+    section('In motion', 'motion', working, '') +
+    section('At rest', 'rest', resting, '') +
+    section('Earlier', 'earlier', data.earlier, '', true);
 
-  document.querySelectorAll('[data-id]').forEach(el =>
-    el.addEventListener('click', () => openDrawer(el.dataset.id)));
+  document.querySelectorAll('.lrow').forEach(el => {
+    el.addEventListener('click', () => select(el.dataset.id));
+    el.addEventListener('dblclick', () => jumpIn(el.dataset.id));
+  });
+  document.querySelectorAll('.jump').forEach(el =>
+    el.addEventListener('click', (e) => { e.stopPropagation(); jumpIn(el.dataset.jump); }));
+
+  if (!userSelected && !selectedId && needs.concat(working, resting)[0]) {
+    select(needs.concat(working, resting)[0].id, false);
+  }
 }
 
 async function refresh() {
   try {
     data = await (await fetch('/api/sessions')).json();
     render();
-    if (openId) fillDrawer(openId, true);
+    if (selectedId) renderDetail(selectedId, true);
   } catch { /* server restarting */ }
 }
 
-/* ---------- drawer ---------- */
-async function openDrawer(id) {
-  openId = id;
-  $('#drawer').classList.add('open');
-  $('#scrim').classList.add('open');
-  fillDrawer(id);
+function select(id, byUser = true) {
+  selectedId = id;
+  if (byUser) userSelected = true;
+  document.querySelectorAll('.lrow').forEach(el => el.classList.toggle('sel', el.dataset.id === id));
+  renderDetail(id);
 }
-function closeDrawer() {
-  openId = null;
-  $('#drawer').classList.remove('open');
-  $('#scrim').classList.remove('open');
-}
-$('#scrim').addEventListener('click', closeDrawer);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDrawer(); closeWish(); } });
 
-async function fillDrawer(id, soft = false) {
+/* ---------- jump (fluid path into cmux) ---------- */
+async function jumpIn(id) {
+  toast('opening in cmux…', 12000);
+  try {
+    const r = await (await fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })).json();
+    if (r.result === 'focused') toast('focused its cmux pane');
+    else if (r.result === 'resumed') toast('resumed in a new cmux workspace');
+    else {
+      const copied = await safeCopy(r.resumeCmd);
+      toast(`couldn't open: ${r.detail || r.error || r.result}${copied ? ' — resume command copied' : ''}`, 8000);
+    }
+  } catch (e) { toast(`couldn't open: ${e.message}`, 8000); }
+}
+
+/* ---------- detail: letter + gazette ---------- */
+function fmtDate(ts) {
+  return new Date(ts || Date.now()).toLocaleString('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+async function renderDetail(id, soft = false) {
   let d;
   try { d = await (await fetch(`/api/session/${id}`)).json(); } catch { return; }
-  if (openId !== id) return;
-  const hero = d.artHistory?.length ? d.artHistory[d.artHistory.length - 1].url : d.art;
-  const film = (d.artHistory || []).length > 1
-    ? `<div class="block"><div class="label">How it looked along the way</div>
-        <div class="filmstrip">${d.artHistory.map((a, i) => `<img src="${a.url}" data-url="${a.url}" class="${i === d.artHistory.length - 1 ? 'sel' : ''}">`).join('')}</div></div>`
+  if (selectedId !== id) return;
+
+  const heroList = d.artHistory || [];
+  const latest = heroList[heroList.length - 1];
+  const paras = (d.status || '').split(/(?<=\.)\s+/).filter(Boolean);
+
+  const exchange = (d.recent || []).slice(-6).map(m => `
+    <article class="gz-item">
+      <span class="gz-who">${m.role === 'user' ? 'Derek' : 'The agent'}</span>
+      <p>${esc(m.text.slice(0, 480))}${m.text.length > 480 ? '…' : ''}</p>
+    </article>`).join('');
+
+  const film = heroList.length
+    ? `<div class="gz-film">${heroList.slice(-6).map(a => `<img src="${a.url}">`).join('')}</div>`
     : '';
-  const exchange = (d.recent || []).slice(-4).map(m =>
-    `<div class="msg ${m.role}"><span class="who">${m.role === 'user' ? 'you' : 'agent'}</span>${esc(m.text)}</div>`).join('');
 
-  $('#drawerInner').innerHTML = `
-    <div class="hero">${hero ? `<img id="heroImg" src="${hero}">` : `<div class="placeholder" style="display:flex;height:100%;align-items:center;justify-content:center;font-size:44px">${esc(d.emoji || '·')}</div>`}</div>
-    <div>
-      <h2>${d.emoji ? esc(d.emoji) + ' ' : ''}${esc(d.title)}</h2>
-      <div class="sub"><span class="chip">${esc(d.project)}</span>${d.branch ? `<span class="chip">${esc(d.branch)}</span>` : ''}<span>${ago(d.lastActivity)} · ${d.msgs} messages · ${d.tools} tool runs</span></div>
-    </div>
-    ${d.state === 'needs-input' && d.asks ? `<div class="asks">→ ${esc(d.asks)}</div>` : ''}
-    ${d.status ? `<div class="block"><div class="label">Now</div><p>${esc(d.status)}</p></div>` : ''}
-    ${d.firstPrompt ? `<div class="block"><div class="label">The wish</div><p class="wish-text">“${esc(d.firstPrompt.slice(0, 420))}${d.firstPrompt.length > 420 ? '…' : ''}”</p></div>` : ''}
-    ${film}
-    ${exchange ? `<div class="block"><div class="label">Last exchange</div><div class="exchange">${exchange}</div></div>` : ''}
-    <div class="actions">
-      <button class="primary" id="jumpBtn">Jump in ↗</button>
-      <button class="ghost" id="copyBtn">Copy resume command</button>
-    </div>
-    <div class="path">${esc(d.resumeCmd || '')}</div>`;
+  $('#detail').innerHTML = `
+  <div class="paper">
+    <div class="letter">
+      <div class="letterhead">
+        <div>FROM THE DECK OF ${esc(d.project).toUpperCase()}</div>
+        <div class="lh2">${esc(d.cwd || '')}${d.branch ? ' · ' + esc(d.branch) : ''}</div>
+      </div>
+      <div class="dateline">${fmtDate(d.lastActivity)}</div>
 
-  $('#jumpBtn')?.addEventListener('click', async () => {
-    toast('opening… (starts cmux if needed — can take a few seconds)', 15000);
-    try {
-      const r = await (await fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })).json();
-      if (r.result === 'focused') toast('focused its cmux pane');
-      else if (r.result === 'resumed') toast('resumed in a new cmux workspace');
-      else {
-        const copied = await safeCopy(r.resumeCmd || d.resumeCmd);
-        toast(`couldn't open: ${r.detail || r.error || r.result}${copied ? ' — resume command copied' : ''}`, 8000);
-      }
-    } catch (e) { toast(`couldn't open: ${e.message}`, 8000); }
-  });
+      <div class="lt-glyph">${latest ? `<img src="${latest.url}">` : esc(d.emoji || '')}</div>
+      <h1>${esc(d.title)}</h1>
+
+      ${d.asks ? `<div class="lt-asks">→ ${esc(d.asks)}</div>` : ''}
+
+      <div class="lt-body">
+        ${paras.map(p => `<p>${esc(p)}</p>`).join('') || '<p>Nothing to report yet — the story is still being written.</p>'}
+        ${d.firstPrompt ? `<p class="lt-wish">You wrote: <em>“${esc(d.firstPrompt.slice(0, 360))}${d.firstPrompt.length > 360 ? '…' : ''}”</em></p>` : ''}
+      </div>
+
+      <div class="lt-sign">
+        <span>Yours in progress,</span>
+        <span class="lt-agent">${esc(d.emoji || '✳')} the ${esc(d.project)} session</span>
+      </div>
+
+      <div class="lt-actions">
+        <button class="primary" id="jumpBtn">Jump in ↗</button>
+        <button class="ghost paper-ghost" id="copyBtn">Copy resume command</button>
+        <span class="lt-state pill state-${d.state}"><span class="dot"></span>${STATE_LABEL[d.state] || d.state}</span>
+      </div>
+    </div>
+
+    <div class="gazette">
+      <div class="gz-masthead">The ${esc(d.project)} Gazette</div>
+      <div class="gz-dateline">
+        <span>${d.msgs} messages</span><span>·</span><span>${d.tools} tool runs</span><span>·</span><span>last activity ${ago(d.lastActivity)}</span>
+      </div>
+      ${film}
+      <div class="gz-rule"></div>
+      <div class="gz-cols">
+        <div class="gz-head">The latest exchange</div>
+        ${exchange || '<p class="gz-none">No correspondence on record.</p>'}
+      </div>
+      <div class="gz-foot">${esc(d.resumeCmd || '')}</div>
+    </div>
+  </div>`;
+
+  $('#jumpBtn')?.addEventListener('click', () => jumpIn(id));
   $('#copyBtn')?.addEventListener('click', async () => {
-    toast((await safeCopy(d.resumeCmd)) ? 'copied' : 'copy failed — command is shown below the buttons');
+    toast((await safeCopy(d.resumeCmd)) ? 'copied' : 'copy failed — command is printed at the bottom of the gazette');
   });
-  document.querySelectorAll('.filmstrip img').forEach(img =>
-    img.addEventListener('click', () => {
-      $('#heroImg').src = img.dataset.url;
-      document.querySelectorAll('.filmstrip img').forEach(i => i.classList.remove('sel'));
-      img.classList.add('sel');
-    }));
-  void soft;
+  if (!soft) $('#detail').scrollTop = 0;
 }
 
 /* ---------- wish ---------- */
@@ -169,6 +199,7 @@ $('#wishBtn').addEventListener('click', async () => {
   } catch {}
 });
 $('#wishCancel').addEventListener('click', closeWish);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeWish(); });
 $('#wishGo').addEventListener('click', async () => {
   const text = $('#wishText').value.trim();
   const cwd = $('#wishCwd').value.trim() || $('#wishCwd').placeholder;
@@ -185,7 +216,7 @@ $('#wishGo').addEventListener('click', async () => {
   } catch (e) { toast(`couldn't start: ${e.message}`, 8000); }
 });
 
-/* ---------- toast ---------- */
+/* ---------- toast + clipboard ---------- */
 let toastTimer;
 function toast(msg, ms = 2600) {
   const t = $('#toast');
@@ -195,7 +226,7 @@ function toast(msg, ms = 2600) {
   toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 
-// Clipboard that never throws: async API first (may be absent in WKWebView),
+// Clipboard that never throws: async API first (absent in WKWebView),
 // hidden-textarea fallback second.
 async function safeCopy(text) {
   if (!text) return false;
