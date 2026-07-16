@@ -8,7 +8,9 @@ import { loadEnv, readCache, writeCache, listArt, ART_DIR, DATA_DIR, PORT } from
 import { Scanner, ACTIVE_WINDOW } from './scanner.mjs';
 import { generateBrain } from './brain.mjs';
 import { saveGlyph } from './art.mjs';
+import { WebSocketServer } from 'ws';
 import { ensureCmux, focusPane, frontCmux, openWorkspace, readScreen, shq } from './cmux.mjs';
+import { attach, bindTerm, boundTerm, startTerm, startWish, termRunning } from './term.mjs';
 
 loadEnv();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +27,7 @@ function metaFor(id) {
     const cached = readCache(id) || {};
     m = { brain: cached.brain || null, dirtyEvent: false, artDay: cached.artDay || '', artCount: cached.artCount || 0, generating: false, artBusy: false };
     if (cached.hook && !hookState.has(id)) hookState.set(id, cached.hook);
+    if (cached.term) bindTerm(id, cached.term);
     brainMeta.set(id, m);
   }
   return m;
@@ -32,7 +35,7 @@ function metaFor(id) {
 function persist(id) {
   const m = brainMeta.get(id);
   if (!m) return;
-  writeCache(id, { brain: m.brain, artDay: m.artDay, artCount: m.artCount, hook: hookState.get(id) || null });
+  writeCache(id, { brain: m.brain, artDay: m.artDay, artCount: m.artCount, hook: hookState.get(id) || null, term: boundTerm(id) });
 }
 
 // ---------- state ----------
@@ -100,9 +103,10 @@ function broadcast() {
 scanner.on('change', broadcast);
 
 // ---------- hook events ----------
-function onHookEvent(payload, cmuxIdent) {
+function onHookEvent(payload, cmuxIdent, termName) {
   const id = payload.session_id;
   if (!id) return;
+  if (termName) bindTerm(id, termName);
   const ev = payload.hook_event_name;
   const map = {
     UserPromptSubmit: 'working',
@@ -191,7 +195,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/event' && req.method === 'POST') {
       const body = await readBody(req).catch(() => null);
-      if (body) onHookEvent(body.payload || body, body.cmux || null);
+      if (body) onHookEvent(body.payload || body, body.cmux || null, body.term || null);
       return send(res, 204, '');
     }
     if (p === '/api/sessions') return send(res, 200, board());
@@ -206,6 +210,8 @@ const server = http.createServer(async (req, res) => {
         recent: s.recent.slice(-8),
         artHistory: listArt(id),
         file: s.file,
+        term: await termRunning(id),
+        cmuxPane: !!hookState.get(id)?.loc?.workspace_uuid,
         resumeCmd: `cd ${shq(s.cwd || '~')} && claude --resume ${id}`,
       });
     }
@@ -227,13 +233,16 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/wish' && req.method === 'POST') {
       const { cwd, text } = await readBody(req);
       if (!text) return send(res, 400, { error: 'no wish' });
-      const launchCmd = `cd ${shq(cwd || '~')} && claude ${shq(text)}`;
-      const cm = await ensureCmux();
-      if (!cm.up) return send(res, 200, { result: 'no-cmux', detail: cm.reason, cmd: launchCmd });
-      const title = text.split(/\s+/).slice(0, 5).join(' ');
-      const ws = await openWorkspace(title, cwd, `claude ${shq(text)}`);
-      if (ws) frontCmux();
-      return send(res, 200, ws ? { result: 'started', workspace: ws } : { result: 'failed', detail: 'cmux answered ping but workspace creation failed', cmd: launchCmd });
+      const name = await startWish(cwd, text);
+      if (name) return send(res, 200, { result: 'started', term: name });
+      return send(res, 200, { result: 'failed', detail: 'tmux could not start the session', cmd: `cd ${shq(cwd || '~')} && claude ${shq(text)}` });
+    }
+    if (p.startsWith('/api/term/') && req.method === 'POST') {
+      const id = p.split('/')[3];
+      const s = scanner.sessions.get(id);
+      if (!s) return send(res, 404, { error: 'unknown session' });
+      const name = await startTerm(s);
+      return send(res, 200, name ? { ok: true, term: name } : { ok: false, detail: 'tmux could not start' });
     }
     if (p === '/api/projects') {
       const seen = new Map();
@@ -273,6 +282,14 @@ const server = http.createServer(async (req, res) => {
     console.error(req.method, p, e.message);
     return send(res, 500, { error: e.message });
   }
+});
+
+// ---------- terminal websocket ----------
+const wss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (req, socket, head) => {
+  const m = req.url.match(/^\/term\/([0-9a-f-]{36})$/);
+  if (!m) { socket.destroy(); return; }
+  wss.handleUpgrade(req, socket, head, (ws) => attach(ws, m[1]));
 });
 
 console.log('vibedeck: scanning sessions…');

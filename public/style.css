@@ -208,7 +208,15 @@ button.paper-ghost:hover { color: var(--paper-ink); border-color: var(--paper-di
 .lt-state.state-needs-input { color: var(--paper-amber); } .lt-state.state-needs-input .dot { background: var(--paper-amber); }
 
 /* -- live terminal inset -- */
-#termSlot { margin: 0 30px; }
+.termzone { margin: 0 30px; }
+.term.live .xt-host { padding: 8px 6px 10px 12px; height: 420px; background: #0d1017; }
+.term.live .xt-host .xterm { height: 100%; }
+.term-hint { margin-left: auto; letter-spacing: .04em; text-transform: none; font-size: 10px; color: #454d66; }
+.term-offer {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--paper-line);
+  padding: 16px 2px 20px; font-family: var(--serif); font-size: 13.5px; font-style: italic; color: var(--paper-dim);
+}
 .term {
   background: #0d1017; border-radius: 10px; overflow: hidden;
   border: 1px solid #262d42; box-shadow: inset 0 1px 8px rgba(0,0,0,.5);

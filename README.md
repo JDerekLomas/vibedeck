@@ -10,6 +10,12 @@ Sessions are triaged by who-needs-you, not by window position:
 
 Click a card for the full story: the original wish, the current state, a filmstrip of cover art as the work evolved, the last exchange — and **Jump in**, which focuses the session's live cmux pane (if it ran inside cmux) or resumes it in a fresh cmux workspace. **+ new wish** starts a new session from an intent, not a blank prompt.
 
+## Terminals
+
+Sessions run inside **headless tmux** (`vd-<id>`), so they survive vibedeck restarts and need no terminal app. The detail pane embeds a real terminal (xterm.js) attached over a WebSocket through node-pty — click "Open terminal here" (or a row's ↗) to resume a session in place and type directly. "+ new wish" births new sessions the same way; hooks report the tmux name back (`VIBEDECK_TERM`) so the board links them up. Sessions living in cmux panes still get a read-only live peek plus a focus-cmux button.
+
+Note: `node-pty` needs a source build on odd Node versions — if `npm install` leaves it broken (`posix_spawnp failed`), run `npm rebuild node-pty --build-from-source`.
+
 ## How it works
 
 - Zero-dependency Node server on `127.0.0.1:8423`. Reads session transcripts from `~/.claude/projects/**/*.jsonl` (streamed + tailed incrementally; older sessions head/tail-sampled).

@@ -13,6 +13,6 @@ fi
 
 curl -s -m 2 -X POST "http://127.0.0.1:${VIBEDECK_PORT:-8423}/api/event" \
   -H 'Content-Type: application/json' \
-  --data-binary "{\"payload\":${payload},\"cmux\":${ident}}" >/dev/null 2>&1
+  --data-binary "{\"payload\":${payload},\"cmux\":${ident},\"term\":\"${VIBEDECK_TERM:-}\"}" >/dev/null 2>&1
 
 exit 0
