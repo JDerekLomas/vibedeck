@@ -24,6 +24,7 @@ export async function generateBrain(session, prev, stateHint) {
     original_wish: (session.wish || session.firstPrompt)?.slice(0, 1200) || null,
     previous_title: prev?.title || session.aiTitle || null,
     previous_status: prev?.status || null,
+    previous_svg: prev?.svg?.slice(0, 1400) || null,
     current_state: stateHint || 'unknown',
     recent_transcript: transcript,
   };
@@ -38,8 +39,16 @@ export async function generateBrain(session, prev, stateHint) {
   "asks": "if the session is waiting on Derek, one short imperative phrase of what it needs (e.g. 'approve the deploy', 'answer: which database?'), else null",
   "emoji": "one emoji",
   "milestone": true if since the previous_status something significant completed, shipped, or the direction changed — else false,
-  "svg": "a bold pictogram identifying this session: one complete <svg> element, viewBox='0 0 100 100', 4-10 flat filled shapes (circle/rect/path/polygon/ellipse), NO text, NO strokes, NO gradients. Fill colors ONLY from: #e8a852 #5f9e94 #efe6d0 #c96f4a #8d86c9. Transparent background. CRITICAL: shapes must be LARGE and fill the canvas edge-to-edge (main shape 60-90 units wide), overlapping like a screenprint poster mark — not a small centered icon. Concrete and symbolic of THIS session's subject. Under 1000 characters."
-}`,
+  "svg": "the session's pictogram — one complete <svg> element following the SVG RULES below"
+}
+
+SVG RULES — this mark is how Derek recognizes the session in a sidebar, so it must be UNIQUE to this session's subject:
+1. KEEP-IF-GOOD: if previous_svg exists, is NOT a generic document/page/checkmark, and the session is still about the same thing, return previous_svg byte-for-byte unchanged. Only draw fresh when the subject genuinely changed or the previous glyph was generic.
+2. First name (to yourself) ONE concrete physical object or scene that is what the work is ABOUT — then draw that. Examples of the mapping: letters to kids at summer camp → a pine tree with an envelope leaning on it; an EEG experiment → a head in profile with electrode dots; a storage cleanup → stacked boxes with one lid open; stone carvings → three standing stones under a sun; a lead-generation funnel → a funnel catching a coin; a translation pipeline → an open book split into two ink colors; a birthday party → a cake with one candle. The object comes from the SUBJECT, never from the medium of work. If the subject truly IS a document, depict its distinctive essence as an object instead: a legal agreement → a wax seal or two overlapping hands; a pull request → two branching paths merging into one; a tax question → a balance scale.
+3. BANNED (these identify nothing): documents/pages/cards with lines, rotated-rectangle fans, browser or terminal windows, envelopes-with-lines, checkmarks (even for finished work), magnifying glasses, gears, lightbulbs. If your first idea is rectangles or a checkmark, look at the subject again and pick a real object from it.
+4. viewBox='0 0 100 100'; 4-10 flat filled shapes (circle/rect/path/polygon/ellipse); no text, no strokes, no gradients; transparent background (it sits on deep indigo).
+5. Fills ONLY from #e8a852 #5f9e94 #efe6d0 #c96f4a #8d86c9 — pick 2-3, not all five.
+6. Composition: main form 60-90 units, asymmetric, overlapping shapes; a slight transform='rotate(a cx cy)' on one shape adds life. Under 1000 characters.`,
     messages: [{ role: 'user', content: JSON.stringify(context) }],
   };
 

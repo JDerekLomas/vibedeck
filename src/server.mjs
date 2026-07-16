@@ -150,15 +150,16 @@ async function brainTick() {
     if (!stale || !cooled) continue;
     m.generating = true; brainBusy++;
     const hint = stateOf(s).state;
-    const hadSvg = !!m.brain?.svg;
+    const prevSvg = m.brain?.svg || null;
     generateBrain(s, m.brain, hint)
       .then(brain => {
         if (brain) {
           m.brain = brain; m.dirtyEvent = false;
-          // New glyph when the session gets its first one, or on a milestone —
-          // history accumulates into the drawer's filmstrip.
+          // Persist a glyph when the session gets its first one, or whenever
+          // the drawing actually changed (the brain keeps good glyphs verbatim,
+          // so changed bytes mean a genuine redraw). History feeds the filmstrip.
           const hasGlyph = listArt(s.id).some(a => a.url.endsWith('.svg'));
-          if (!hasGlyph || (brain.milestone && hadSvg) ) saveGlyph(s, brain.svg);
+          if (!hasGlyph || (brain.svg && brain.svg !== prevSvg)) saveGlyph(s, brain.svg);
           persist(s.id); broadcast();
         }
       })
