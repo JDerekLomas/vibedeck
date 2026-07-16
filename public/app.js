@@ -108,6 +108,39 @@ async function jumpIn(id) {
   } catch (e) { toast(`couldn't open: ${e.message}`, 8000); }
 }
 
+/* ---------- live terminal ---------- */
+let screenTimer = null;
+let lastScreen = { id: null, text: null };
+
+function renderTerm(id) {
+  const slot = $('#termSlot');
+  if (!slot || lastScreen.id !== id) return;
+  if (!lastScreen.text) { slot.innerHTML = ''; return; }
+  const had = slot.querySelector('pre');
+  const atBottom = !had || had.scrollHeight - had.scrollTop - had.clientHeight < 40;
+  slot.innerHTML = `<div class="term">
+    <div class="term-bar"><span class="term-dot"></span>live from the cmux pane</div>
+    <pre>${esc(lastScreen.text)}</pre>
+  </div>`;
+  const pre = slot.querySelector('pre');
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+async function pollScreen(id) {
+  try {
+    const r = await (await fetch(`/api/screen/${id}`)).json();
+    if (selectedId !== id) return;
+    lastScreen = { id, text: (r.text || '').trimEnd() || null };
+    renderTerm(id);
+  } catch { /* server restarting */ }
+}
+
+function watchScreen(id) {
+  clearInterval(screenTimer);
+  pollScreen(id);
+  screenTimer = setInterval(() => pollScreen(id), 3000);
+}
+
 /* ---------- detail: letter + gazette ---------- */
 function fmtDate(ts) {
   return new Date(ts || Date.now()).toLocaleString('en-GB', {
@@ -165,6 +198,8 @@ async function renderDetail(id, soft = false) {
       </div>
     </div>
 
+    <div id="termSlot"></div>
+
     <div class="gazette">
       <div class="gz-masthead">The ${esc(d.project)} Gazette</div>
       <div class="gz-dateline">
@@ -184,7 +219,7 @@ async function renderDetail(id, soft = false) {
   $('#copyBtn')?.addEventListener('click', async () => {
     toast((await safeCopy(d.resumeCmd)) ? 'copied' : 'copy failed — command is printed at the bottom of the gazette');
   });
-  if (!soft) $('#detail').scrollTop = 0;
+  if (soft) renderTerm(id); else { $('#detail').scrollTop = 0; watchScreen(id); }
 }
 
 /* ---------- wish ---------- */

@@ -39,6 +39,14 @@ export function frontCmux() {
   execFile('open', ['-b', BUNDLE], () => {});
 }
 
+// Read the visible contents of a session's cmux pane (best-effort, no launch).
+export async function readScreen(loc, lines = 45) {
+  if (!loc?.workspace_uuid) return null;
+  const args = ['read-screen', '--workspace', loc.workspace_uuid, '--lines', String(lines)];
+  if (loc.surface_uuid) args.splice(2, 0, '--surface', loc.surface_uuid);
+  return run(args, 4000);
+}
+
 // Focus a known workspace/surface (from hook-captured identify data).
 // Prefer UUIDs: short refs like "workspace:2" are reused after closes and can
 // silently focus the wrong workspace.

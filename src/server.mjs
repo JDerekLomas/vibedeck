@@ -8,7 +8,7 @@ import { loadEnv, readCache, writeCache, listArt, ART_DIR, DATA_DIR, PORT } from
 import { Scanner, ACTIVE_WINDOW } from './scanner.mjs';
 import { generateBrain } from './brain.mjs';
 import { saveGlyph } from './art.mjs';
-import { ensureCmux, focusPane, frontCmux, openWorkspace, shq } from './cmux.mjs';
+import { ensureCmux, focusPane, frontCmux, openWorkspace, readScreen, shq } from './cmux.mjs';
 
 loadEnv();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -241,6 +241,13 @@ const server = http.createServer(async (req, res) => {
         if (s.cwd) seen.set(s.cwd, Math.max(seen.get(s.cwd) || 0, s.lastActivity || s.mtime));
       }
       return send(res, 200, [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([cwd]) => cwd).slice(0, 40));
+    }
+    if (p.startsWith('/api/screen/')) {
+      const id = p.split('/')[3];
+      const loc = hookState.get(id)?.loc;
+      if (!loc?.workspace_uuid) return send(res, 200, { text: null, reason: 'no cmux pane on record' });
+      const text = await readScreen(loc);
+      return send(res, 200, text === null ? { text: null, reason: 'cmux not answering' } : { text });
     }
     if (p === '/api/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
